@@ -11,6 +11,7 @@ build/
 *.log
 .opencode/
 .DS_Store
+README.md
 output/*
 cache/*
 !output/.gitkeep
