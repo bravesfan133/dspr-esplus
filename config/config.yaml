@@ -1,0 +1,46 @@
+# Configuration for Dispatcharr ESPN+ EPG Generator
+
+# Playlist URL (M3U URL containing ESPN+ streams)
+playlist_url: "http://example.com/playlist.m3u"
+
+# Dispatcharr connection
+dispatcharr:
+  base_url: "http://192.168.0.168:9191"
+  username: "admin"
+  password: "admin"
+  # Or use api_key instead of username/password:
+  # api_key: "your-api-key"
+
+# EPG source configuration
+epg:
+  # Name for the EPG source to create/find in Dispatcharr
+  source_name: "ESPN+ EPG"
+  # XMLTV output path (inside container)
+  xmltv_output: "/app/output/espnplus_epg.xml"
+  # Channel ID prefix for XMLTV
+  channel_id_prefix: "ESPN+"
+
+# ESPN schedule configuration
+espn:
+  # Date format: YYYYMMDD. Use "today" for today's date.
+  date: "today"
+  # ESPN API endpoint for schedule
+  base_url: "https://site.web.api.espn.com/apis/site/v2/sports"
+
+# Matching configuration
+matching:
+  # Minimum similarity score (0.0 - 1.0)
+  min_similarity: 0.90
+  # ESPN+ keyword to search for in channel names
+  keyword: "ESPN+"
+
+# Polling interval in minutes
+poll_interval_minutes: 120
+
+# Logging
+logging:
+  level: "INFO"
+  file: "/app/logs/espnplus.log"
+
+# Cache directory
+cache_dir: "/app/cache"

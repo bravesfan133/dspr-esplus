@@ -1,0 +1,38 @@
+# Configuration for Dispatcharr ESPN+ EPG Generator
+
+# Dispatcharr connection
+dispatcharr:
+  base_url: "http://192.168.0.168:9191"
+  username: "admin"
+  password: "admin"
+  # Or use api_key instead of username/password:
+  # api_key: "your-api-key"
+
+# EPG source configuration
+epg:
+  source_name: "ESPN+ EPG"
+  xmltv_output: "output/espnplus_epg.xml"
+  channel_id_prefix: "ESPN+"
+  channel_number_start: 900
+  epg_group_name: "ESPN+"
+
+# ESPN+ schedule configuration
+espn:
+  date: "today"
+  look_ahead_days: 1
+
+# Matching configuration
+matching:
+  min_similarity: 0.85
+  keyword: "ESPN+"
+
+# Polling interval in minutes
+poll_interval_minutes: 120
+
+# Logging
+logging:
+  level: "INFO"
+  file: "logs/espnplus.log"
+
+# Cache directory
+cache_dir: "cache"
