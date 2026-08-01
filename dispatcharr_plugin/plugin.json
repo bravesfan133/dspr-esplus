@@ -1,7 +1,7 @@
 {
   "name": "ESPN+ EPG",
-  "version": "1.0.0",
-  "description": "Generates a custom ESPN+ EPG from your IPTV playlist by matching ESPN+ streams to ESPN's Watch schedule, then creates channels and assigns EPG data in Dispatcharr. Runs automatically after every M3U refresh.",
+  "version": "1.4.2",
+  "description": "Generates a custom ESPN+ EPG from your IPTV playlist by matching ESPN+ streams to ESPN's Watch schedule, then creates channels and assigns EPG data in Dispatcharr. Runs automatically after every M3U refresh, and can refresh the matching playlist and guide on a Channels DVR server.",
   "author": "nick",
   "fields": [
     {
@@ -98,21 +98,57 @@
       "description": "Run this plugin automatically after every M3U refresh event.",
       "type": "boolean",
       "default": true
+    },
+    {
+      "id": "channels_dvr_enabled",
+      "label": "Refresh Channels DVR After Sync",
+      "description": "After a successful Dispatcharr sync, refresh the selected M3U source and its XMLTV guide on Channels DVR.",
+      "type": "boolean",
+      "default": false
+    },
+    {
+      "id": "channels_dvr_base_url",
+      "label": "Channels DVR Base URL",
+      "description": "Address of your Channels DVR server, e.g. http://192.168.0.168:8089",
+      "type": "string",
+      "default": "",
+      "placeholder": "http://192.168.0.168:8089"
+    },
+    {
+      "id": "channels_dvr_m3u_source",
+      "label": "Channels DVR M3U Source",
+      "description": "Name of the M3U playlist source on Channels DVR to refresh after each sync, e.g. 'Platinum and EPG'.",
+      "type": "string",
+      "default": "",
+      "placeholder": "e.g. Platinum and EPG"
+    },
+    {
+      "id": "channels_dvr_epg_lineup",
+      "label": "Channels DVR EPG Lineup (optional)",
+      "description": "Leave blank to auto-derive 'XMLTV-<M3U source>' (the default naming for an M3U source's guide).",
+      "type": "string",
+      "default": ""
     }
   ],
   "actions": [
     {
       "id": "run_now",
       "label": "Run Now",
-      "description": "Create/update channels and refresh the EPG source.",
-      "confirm": "Run the ESPN+ EPG sync now? This will create/update channels and refresh the EPG source.",
+      "description": "Create/update channels, refresh the EPG source, and optionally refresh Channels DVR.",
+      "confirm": "Run the ESPN+ EPG sync now? This will create/update channels, refresh the EPG source, and refresh Channels DVR if configured.",
       "events": []
     },
     {
       "id": "dry_run",
       "label": "Dry Run",
-      "description": "Fetch and match only — no changes made to Dispatcharr.",
-      "confirm": "Fetch and match only — no changes will be made to Dispatcharr.",
+      "description": "Fetch and match only — no changes made to Dispatcharr or Channels DVR.",
+      "confirm": "Fetch and match only — no changes will be made to Dispatcharr or Channels DVR.",
+      "events": []
+    },
+    {
+      "id": "test_channels_dvr",
+      "label": "Test Channels DVR Connection",
+      "description": "Check that the Channels DVR server is reachable.",
       "events": []
     },
     {

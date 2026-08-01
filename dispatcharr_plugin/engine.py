@@ -1,8 +1,15 @@
 import json
 import logging
+import time
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
+from .channels_dvr import (
+    derive_epg_lineup_name,
+    list_sources,
+    refresh_epg_lineup,
+    refresh_m3u_source,
+)
 from .espn import fetch_espn_plus_schedule
 from .matcher import match_events
 from .playlist import (
@@ -27,6 +34,10 @@ DEFAULT_SETTINGS = {
     "espn_date": "today",
     "log_level": "INFO",
     "auto_refresh": True,
+    "channels_dvr_enabled": False,
+    "channels_dvr_base_url": "",
+    "channels_dvr_m3u_source": "",
+    "channels_dvr_epg_lineup": "",
 }
 
 
@@ -95,11 +106,80 @@ def validate_settings(settings: dict) -> dict:
     except Exception as e:
         errors.append(f"Could not import EPG tasks: {e}")
 
+    if bool(settings.get("channels_dvr_enabled", False)):
+        if not str(settings.get("channels_dvr_base_url", "") or "").strip():
+            errors.append(
+                "'channels_dvr_base_url' must be set when Channels DVR refresh is enabled"
+            )
+        if not str(settings.get("channels_dvr_m3u_source", "") or "").strip():
+            errors.append(
+                "'channels_dvr_m3u_source' must be selected when Channels DVR refresh is enabled"
+            )
+
     return {
         "status": "ok" if not errors else "error",
         "errors": errors,
         "info": info,
     }
+
+
+def _channels_dvr_summary(settings: dict) -> dict:
+    """Run the Channels DVR refresh and wrap any exception into a result dict."""
+    try:
+        return refresh_channels_dvr(settings)
+    except Exception as e:
+        logger.exception("Channels DVR refresh failed")
+        return {"status": "error", "message": f"{type(e).__name__}: {e}"}
+
+
+def refresh_channels_dvr(settings: dict) -> dict:
+    """Refresh the selected M3U source and XMLTV lineup on Channels DVR."""
+    if not bool(settings.get("channels_dvr_enabled", False)):
+        return {"status": "skipped", "message": "Channels DVR refresh disabled in settings"}
+
+    base_url = str(settings.get("channels_dvr_base_url", "") or "").strip()
+    if not base_url:
+        return {"status": "skipped", "message": "Channels DVR base URL not set"}
+
+    source_name = str(settings.get("channels_dvr_m3u_source", "") or "").strip()
+    if not source_name:
+        return {"status": "skipped", "message": "No Channels DVR M3U source selected"}
+
+    device_id = None
+    device_to_lineup = {}
+    try:
+        sources_result = list_sources(base_url)
+        for source in sources_result.get("m3u_sources", []):
+            if source.get("name") == source_name:
+                device_id = source.get("device_id")
+                break
+        device_to_lineup = sources_result.get("device_to_lineup", {})
+    except Exception as e:
+        logger.warning(f"Could not look up Channels DVR source device id: {e}")
+
+    m3u_ok = refresh_m3u_source(base_url, source_name, device_id=device_id)
+    time.sleep(5)
+
+    lineup_name = str(settings.get("channels_dvr_epg_lineup", "") or "").strip()
+    if not lineup_name:
+        lineup_name = device_to_lineup.get(device_id) or derive_epg_lineup_name(
+            source_name
+        )
+    epg_ok = refresh_epg_lineup(base_url, lineup_name)
+
+    if m3u_ok and epg_ok:
+        return {
+            "status": "ok",
+            "message": (
+                f"Channels DVR refreshed: M3U '{source_name}', EPG '{lineup_name}'"
+            ),
+        }
+    problems = []
+    if not m3u_ok:
+        problems.append(f"M3U refresh failed for '{source_name}'")
+    if not epg_ok:
+        problems.append(f"EPG refresh failed for '{lineup_name}'")
+    return {"status": "error", "message": "; ".join(problems)}
 
 
 def run_once(settings: dict, dry_run: bool = False, force: bool = False) -> dict:
@@ -126,6 +206,14 @@ def run_once(settings: dict, dry_run: bool = False, force: bool = False) -> dict
     espn_events = []
     for day_iso in days:
         espn_events.extend(fetch_espn_plus_schedule(day_iso))
+
+    prev_day_events = []
+    try:
+        first_day = datetime.strptime(days[0], "%Y-%m-%d").date()
+        prev_day_iso = (first_day - timedelta(days=1)).strftime("%Y-%m-%d")
+        prev_day_events = fetch_espn_plus_schedule(prev_day_iso)
+    except (ValueError, TypeError, IndexError):
+        prev_day_events = []
 
     matches = match_events(
         espn_entries,
@@ -181,6 +269,8 @@ def run_once(settings: dict, dry_run: bool = False, force: bool = False) -> dict
             "status": "skipped",
             "message": "No changes since last run — nothing to do",
         }
+        if bool(settings.get("channels_dvr_enabled", False)):
+            result["channels_dvr"] = _channels_dvr_summary(settings)
         state.save_status(result)
         return result
 
@@ -196,11 +286,18 @@ def run_once(settings: dict, dry_run: bool = False, force: bool = False) -> dict
     from .sync import sync_to_dispatcharr
 
     try:
-        sync_result = sync_to_dispatcharr(matches, settings)
+        sync_result = sync_to_dispatcharr(
+            matches,
+            settings,
+            prev_day_events=prev_day_events,
+            reference_date=days[0] if days else None,
+        )
     except Exception as e:
         logger.exception("Dispatcharr sync failed")
         raise
 
     summary.update(sync_result)
+    if bool(settings.get("channels_dvr_enabled", False)):
+        summary["channels_dvr"] = _channels_dvr_summary(settings)
     state.save_status(summary)
     return summary

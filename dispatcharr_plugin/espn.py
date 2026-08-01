@@ -12,7 +12,7 @@ ESPN_WATCH_API_KEY = "0dbf88e8-cc6d-41da-aa83-18b5c630bc5c"
 QUERY = (
     'query Airings($day:String,$tz:String!){'
     'airings(day:$day,deviceType:DESKTOP,countryCode:"us",tz:$tz,packages:["ESPN_PLUS"],limit:500){'
-    'id name shortName startDateTime endDateTime duration '
+    'id name shortName subtitle description startDateTime endDateTime duration '
     'sport{ name abbreviation } league{ name abbreviation } '
     'category{ name } subcategory{ name } program{ isStudio } image{ url }'
     '}}'
@@ -49,6 +49,8 @@ def _parse_airing(a: dict) -> Optional[dict]:
     return {
         "title": name,
         "short_name": a.get("shortName") or name,
+        "subtitle": a.get("subtitle") or "",
+        "description": a.get("description") or "",
         "start_time": start_dt.isoformat(),
         "end_time": end_dt.isoformat() if end_dt else None,
         "start_timestamp": int(start_dt.timestamp()),

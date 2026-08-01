@@ -1,9 +1,12 @@
 import logging
 import os
 import time
+from datetime import datetime
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 from .extract import extract_channel_number_index
+from .playlist import event_ends_after, extract_espn_datetime
 from .xmltv_gen import generate_xmltv, get_channel_id
 
 logger = logging.getLogger(__name__)
@@ -159,7 +162,53 @@ def trigger_refresh_and_wait(source_id: int) -> bool:
     return wait_for_epg_refresh(source_id)
 
 
-def sync_to_dispatcharr(matches: list, settings: dict) -> dict:
+def remove_stale_channels(
+    existing: dict,
+    keep_names: set,
+    group,
+    prev_day_events: list[dict],
+    boundary_dt: datetime,
+    active_indices: Optional[set] = None,
+) -> tuple[int, list[str]]:
+    """Delete channels whose event date is before `boundary_dt`, unless the event
+    goes between days (ends at/after the boundary). A previous-day channel whose
+    ESPN+ index is reused by a current match is removed (replaced) regardless.
+    Returns (removed, tvg_ids)."""
+    active_indices = active_indices or set()
+    removed = 0
+    removed_tvg_ids = []
+    for name_lower, channel in existing.items():
+        if name_lower in keep_names:
+            continue
+        if channel.channel_group_id != group.id:
+            continue
+        start = extract_espn_datetime(channel.name)
+        if start is None:
+            continue
+        if start.date() >= boundary_dt.date():
+            continue
+        index = extract_channel_number_index(channel.name)
+        if index is not None and index in active_indices:
+            logger.info(f"Removing replaced channel: {channel.name}")
+        elif event_ends_after(prev_day_events, start, boundary_dt):
+            logger.info(f"Keeping between-days channel: {channel.name}")
+            continue
+        else:
+            logger.info(f"Removing stale channel from previous day: {channel.name}")
+        channel.delete()
+        removed += 1
+        removed_tvg_ids.append(channel.tvg_id)
+    if removed:
+        logger.info(f"Removed {removed} stale channels from previous days")
+    return removed, removed_tvg_ids
+
+
+def sync_to_dispatcharr(
+    matches: list,
+    settings: dict,
+    prev_day_events: Optional[list[dict]] = None,
+    reference_date: Optional[str] = None,
+) -> dict:
     from apps.channels.models import (
         Channel,
         ChannelGroup,
@@ -234,6 +283,35 @@ def sync_to_dispatcharr(matches: list, settings: dict) -> dict:
     logger.info(f"Created {created} new Dispatcharr channels")
     logger.info(f"Updated {updated} existing channels")
 
+    eastern = ZoneInfo("US/Eastern")
+    if reference_date:
+        try:
+            boundary_dt = datetime.strptime(reference_date, "%Y-%m-%d").replace(
+                tzinfo=eastern
+            )
+        except (TypeError, ValueError):
+            boundary_dt = datetime.now(eastern).replace(
+                hour=0, minute=0, second=0, microsecond=0
+            )
+    else:
+        boundary_dt = datetime.now(eastern).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        )
+
+    keep_names = {(entry.name or "").lower() for entry, _ in sorted_matches}
+    active_indices = {
+        extract_channel_number_index(entry.name) for entry, _ in sorted_matches
+    }
+    active_indices.discard(None)
+    removed, removed_tvg_ids = remove_stale_channels(
+        existing,
+        keep_names,
+        group,
+        prev_day_events or [],
+        boundary_dt,
+        active_indices=active_indices,
+    )
+
     xml_content = generate_xmltv(sorted_matches, prefix=channel_id_prefix)
     os.makedirs(EPG_UPLOAD_DIR, exist_ok=True)
     with open(EPG_FILE, "w", encoding="utf-8") as f:
@@ -245,6 +323,14 @@ def sync_to_dispatcharr(matches: list, settings: dict) -> dict:
     epg_rows = upsert_epg_rows(source, sorted_matches, channel_id_prefix)
     logger.info(f"Upserted {len(epg_rows)} EPG channel rows for source {source_name}")
 
+    if removed_tvg_ids:
+        from apps.epg.models import EPGData
+
+        stale, _ = EPGData.objects.filter(
+            epg_source=source, tvg_id__in=removed_tvg_ids
+        ).delete()
+        logger.info(f"Deleted {stale} stale EPG rows for removed channels")
+
     associated = assign_epg_data(xmltv_to_channel, epg_rows)
     logger.info(f"Assigned EPG data to {associated} channels")
 
@@ -255,8 +341,12 @@ def sync_to_dispatcharr(matches: list, settings: dict) -> dict:
     return {
         "created": created,
         "updated": updated,
+        "removed": removed,
         "associated": associated,
         "epg_source": source_name,
         "refreshed": refreshed,
-        "message": f"Synced {len(sorted_matches)} channels; created {created}, updated {updated}",
+        "message": (
+            f"Synced {len(sorted_matches)} channels; "
+            f"created {created}, updated {updated}, removed {removed}"
+        ),
     }

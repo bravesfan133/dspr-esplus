@@ -8,13 +8,173 @@ logger = logging.getLogger("espnplus")
 
 class Plugin:
     name = "ESPN+ EPG"
-    version = "1.0.0"
+    version = "1.4.2"
     description = (
         "Generates a custom ESPN+ EPG from your IPTV playlist by matching ESPN+ "
         "streams to ESPN's Watch schedule, then creates channels and assigns EPG "
-        "data in Dispatcharr. Runs automatically after every M3U refresh."
+        "data in Dispatcharr. Runs automatically after every M3U refresh, and can "
+        "refresh the matching playlist and guide on a Channels DVR server."
     )
     author = "nick"
+
+    actions = [
+        {
+            "id": "run_now",
+            "label": "Run Now",
+            "description": "Create/update channels, refresh the EPG source, and optionally refresh Channels DVR.",
+            "confirm": "Run the ESPN+ EPG sync now? This will create/update channels, refresh the EPG source, and refresh Channels DVR if configured.",
+            "events": [],
+        },
+        {
+            "id": "dry_run",
+            "label": "Dry Run",
+            "description": "Fetch and match only — no changes made to Dispatcharr or Channels DVR.",
+            "confirm": "Fetch and match only — no changes will be made to Dispatcharr or Channels DVR.",
+            "events": [],
+        },
+        {
+            "id": "test_channels_dvr",
+            "label": "Test Channels DVR Connection",
+            "description": "Check that the Channels DVR server is reachable.",
+            "events": [],
+        },
+        {
+            "id": "validate_settings",
+            "label": "Validate Settings",
+            "description": "Check that settings are valid and the Dispatcharr database is reachable.",
+            "events": [],
+        },
+        {
+            "id": "status",
+            "label": "Status",
+            "description": "Show the result of the most recent run.",
+            "events": [],
+        },
+        {
+            "id": "auto_run",
+            "label": "Auto Run",
+            "description": "Runs after every M3U refresh.",
+            "events": [
+                "m3u_refresh"
+            ],
+        },
+    ]
+
+    fields = [
+            {
+                "id": "epg_source_name",
+                "label": "EPG Source Name",
+                "description": "Name of the EPG source created in Dispatcharr.",
+                "type": "text",
+                "default": "ESPN+ EPG",
+            },
+            {
+                "id": "channel_id_prefix",
+                "label": "Channel ID Prefix",
+                "description": "Prefix used to build XMLTV channel IDs.",
+                "type": "text",
+                "default": "ESPN+",
+            },
+            {
+                "id": "channel_number_start",
+                "label": "Starting Channel Number",
+                "description": "First channel number assigned; each matched channel is numbered sequentially from its ESPN+ index.",
+                "type": "number",
+                "default": 900,
+            },
+            {
+                "id": "epg_group_name",
+                "label": "Channel Group Name",
+                "description": "Dispatcharr channel group created for these channels.",
+                "type": "text",
+                "default": "ESPN+",
+            },
+            {
+                "id": "epg_profile_name",
+                "label": "EPG Profile Name",
+                "description": "Dispatcharr channel profile these channels are added to.",
+                "type": "text",
+                "default": "EPG",
+            },
+            {
+                "id": "keyword",
+                "label": "Playlist Keyword",
+                "description": "Keyword used to find ESPN+ streams in the playlist (searched case-insensitively in stream names).",
+                "type": "text",
+                "default": "ESPN+",
+            },
+            {
+                "id": "look_ahead_days",
+                "label": "Look-Ahead Days",
+                "description": "Number of extra days of ESPN schedule to fetch beyond today.",
+                "type": "number",
+                "default": 1,
+            },
+            {
+                "id": "min_similarity",
+                "label": "Minimum Match Similarity",
+                "description": "Similarity threshold (0.0 to 1.0) for fuzzy-matching playlist titles to ESPN events.",
+                "type": "number",
+                "default": 0.85,
+            },
+            {
+                "id": "espn_date",
+                "label": "ESPN Date",
+                "description": "Schedule date to fetch. Use 'today' to fetch today plus the look-ahead days, or a specific YYYY-MM-DD.",
+                "type": "text",
+                "default": "today",
+            },
+            {
+                "id": "log_level",
+                "label": "Log Level",
+                "description": "Verbosity of plugin logging.",
+                "type": "select",
+                "default": "INFO",
+                "options": [
+                    {"label": "DEBUG", "value": "DEBUG"},
+                    {"label": "INFO", "value": "INFO"},
+                    {"label": "WARNING", "value": "WARNING"},
+                    {"label": "ERROR", "value": "ERROR"},
+                ],
+            },
+            {
+                "id": "auto_refresh",
+                "label": "Auto-Refresh After M3U Update",
+                "description": "Run this plugin automatically after every M3U refresh event.",
+                "type": "boolean",
+                "default": True,
+            },
+            {
+                "id": "channels_dvr_enabled",
+                "label": "Refresh Channels DVR After Sync",
+                "description": "After a successful Dispatcharr sync, refresh the selected M3U source and its XMLTV guide on Channels DVR.",
+                "type": "boolean",
+                "default": False,
+            },
+            {
+                "id": "channels_dvr_base_url",
+                "label": "Channels DVR Base URL",
+                "description": "Address of your Channels DVR server, e.g. http://192.168.0.168:8089",
+                "type": "string",
+                "default": "",
+                "placeholder": "http://192.168.0.168:8089",
+            },
+            {
+                "id": "channels_dvr_m3u_source",
+                "label": "Channels DVR M3U Source",
+                "description": "Name of the M3U playlist source on Channels DVR to refresh after each sync, e.g. 'Platinum and EPG'.",
+                "type": "string",
+                "default": "",
+                "placeholder": "e.g. Platinum and EPG",
+            },
+            {
+                "id": "channels_dvr_epg_lineup",
+                "label": "Channels DVR EPG Lineup (optional)",
+                "description": "Leave blank to auto-derive 'XMLTV-<M3U source>' (the default naming for an M3U source's guide).",
+                "type": "string",
+                "default": "",
+            },
+        ]
 
     def run(self, action_id, params, context):
         settings = ((context or {}).get("settings", {}) or {})
@@ -24,6 +184,9 @@ class Plugin:
 
             if action_id == "dry_run":
                 return run_once(settings, dry_run=True, force=True)
+
+            if action_id == "test_channels_dvr":
+                return self._test_channels_dvr(settings)
 
             if action_id == "validate_settings":
                 return validate_settings(settings)
@@ -50,3 +213,22 @@ class Plugin:
         except Exception as e:
             logger.exception("Plugin action %s failed", action_id)
             return {"status": "error", "message": f"{type(e).__name__}: {e}"}
+
+    @staticmethod
+    def _test_channels_dvr(settings):
+        from .channels_dvr import is_reachable
+
+        base_url = str(settings.get("channels_dvr_base_url", "") or "").strip()
+        if not base_url:
+            return {
+                "status": "error",
+                "message": "Set the 'Channels DVR Base URL' setting first, then save settings.",
+            }
+
+        error = is_reachable(base_url)
+        if error is None:
+            return {"status": "ok", "message": f"Channels DVR reachable at {base_url}"}
+        return {
+            "status": "error",
+            "message": f"Channels DVR unreachable at {base_url}: {error}",
+        }

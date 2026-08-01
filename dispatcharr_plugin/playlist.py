@@ -39,6 +39,36 @@ class PlaylistEntry:
     start_time: Optional[datetime] = None
 
 
+def parse_event_datetime(dt_str: Optional[str]) -> Optional[datetime]:
+    if not dt_str:
+        return None
+    try:
+        return dateparser.parse(dt_str)
+    except Exception:
+        return None
+
+
+def event_ends_after(
+    events: list[dict],
+    start_dt: datetime,
+    boundary_dt: datetime,
+    tolerance: timedelta = timedelta(minutes=5),
+) -> bool:
+    """True if any event starts within `tolerance` of `start_dt` and ends at/after `boundary_dt`.
+
+    Used to keep previous-day channels whose event crosses midnight into the
+    current day ("goes between days").
+    """
+    for event in events:
+        event_start = parse_event_datetime(event.get("start_time"))
+        if event_start is None or abs(event_start - start_dt) > tolerance:
+            continue
+        event_end = parse_event_datetime(event.get("end_time"))
+        if event_end is not None and event_end >= boundary_dt:
+            return True
+    return False
+
+
 def extract_espn_datetime(name: str) -> Optional[datetime]:
     if "ESPN+" not in name.upper():
         return None

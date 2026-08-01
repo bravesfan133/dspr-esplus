@@ -26,6 +26,7 @@ def make_metadata(title: str, start: str, end: str) -> dict:
         "is_studio": False,
         "image_url": "http://example.com/icon.png",
         "description": "Big game tonight",
+        "subtitle": "ESPN+ • NBA",
     }
 
 
@@ -105,7 +106,7 @@ def test_no_sports_event_category_when_studio():
         assert "Sports" in cats
 
 
-def test_desc_only_on_real_programme():
+def test_desc_on_all_three_programmes():
     entry = make_entry("NBA: Lakers vs Celtics")
     metadata = make_metadata(
         "Lakers vs Celtics",
@@ -114,10 +115,36 @@ def test_desc_only_on_real_programme():
     )
     xml = generate_xmltv([(entry, metadata)])
     root = etree.fromstring(xml.encode("utf-8"))
-    progs = root.findall("programme")
-    assert progs[0].find("desc") is None
-    assert progs[1].find("desc") is not None
-    assert progs[2].find("desc") is None
+    for prog in root.findall("programme"):
+        assert prog.find("desc") is not None
+
+
+def test_subtitle_on_all_three_programmes():
+    entry = make_entry("NBA: Lakers vs Celtics")
+    metadata = make_metadata(
+        "Lakers vs Celtics",
+        "2024-01-15T20:00:00+00:00",
+        "2024-01-15T22:00:00+00:00",
+    )
+    xml = generate_xmltv([(entry, metadata)])
+    root = etree.fromstring(xml.encode("utf-8"))
+    for prog in root.findall("programme"):
+        assert prog.find("sub-title") is not None
+        assert prog.find("sub-title").text == "ESPN+ • NBA"
+
+
+def test_no_subtitle_when_metadata_missing():
+    entry = make_entry("NBA: Lakers vs Celtics")
+    metadata = make_metadata(
+        "Lakers vs Celtics",
+        "2024-01-15T20:00:00+00:00",
+        "2024-01-15T22:00:00+00:00",
+    )
+    del metadata["subtitle"]
+    xml = generate_xmltv([(entry, metadata)])
+    root = etree.fromstring(xml.encode("utf-8"))
+    for prog in root.findall("programme"):
+        assert prog.find("sub-title") is None
 
 
 def test_upcoming_ends_at_real_start():
@@ -191,7 +218,7 @@ def test_only_live_on_middle_programme():
     assert progs[2].find("live") is None
 
 
-def test_new_and_premiere_only_on_real_programme():
+def test_new_only_on_real_programme():
     entry = make_entry("NBA: Lakers vs Celtics")
     metadata = make_metadata(
         "Lakers vs Celtics",
@@ -204,9 +231,18 @@ def test_new_and_premiere_only_on_real_programme():
     assert progs[0].find("new") is None
     assert progs[1].find("new") is not None
     assert progs[2].find("new") is None
-    assert progs[0].find("premiere") is None
-    assert progs[1].find("premiere") is not None
-    assert progs[2].find("premiere") is None
+
+
+def test_no_premiere_tag():
+    entry = make_entry("NBA: Lakers vs Celtics")
+    metadata = make_metadata(
+        "Lakers vs Celtics",
+        "2024-01-15T20:00:00+00:00",
+        "2024-01-15T22:00:00+00:00",
+    )
+    xml = generate_xmltv([(entry, metadata)])
+    root = etree.fromstring(xml.encode("utf-8"))
+    assert len(root.findall(".//premiere")) == 0
 
 
 def test_no_live_when_studio():
@@ -351,3 +387,36 @@ def test_programmes_use_stop_attribute_not_end():
         assert prog.get("start") is not None
         assert prog.get("stop") is not None
         assert prog.get("end") is None
+
+
+def test_icon_src_is_not_double_escaped():
+    entry = make_entry("NBA: Lakers vs Celtics")
+    url = "https://artwork.api.espn.com/x/default?width=640&apikey=KEY&timestamp=1"
+    metadata = make_metadata(
+        "Lakers vs Celtics",
+        "2024-01-15T20:00:00+00:00",
+        "2024-01-15T22:00:00+00:00",
+    )
+    metadata["image_url"] = url
+    xml = generate_xmltv([(entry, metadata)])
+    assert "&amp;apikey" in xml, "raw XML must have single-escaped &amp;"
+    assert "&amp;amp;" not in xml, "raw XML must NOT have double-escaped &amp;amp;"
+    root = etree.fromstring(xml.encode("utf-8"))
+    for icon in root.findall(".//programme/icon"):
+        assert icon.get("src") == url, f"expected '{url}', got '{icon.get('src')}'"
+
+
+def test_title_special_chars_round_trip():
+    entry = make_entry("NBA: Lakers vs Celtics")
+    metadata = make_metadata(
+        "A & B <C>",
+        "2024-01-15T20:00:00+00:00",
+        "2024-01-15T22:00:00+00:00",
+    )
+    metadata["image_url"] = ""
+    xml = generate_xmltv([(entry, metadata)])
+    root = etree.fromstring(xml.encode("utf-8"))
+    for prog in root.findall("programme"):
+        t = prog.find("title").text
+        assert "&amp;" not in t, f"parsed title text must not contain &amp;: {t!r}"
+        assert "&" in t, f"parsed title must contain raw &: {t!r}"

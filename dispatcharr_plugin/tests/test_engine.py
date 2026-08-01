@@ -1,7 +1,13 @@
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
-from dispatcharr_plugin.engine import get_espn_days, merged_settings, run_once, validate_settings
+from dispatcharr_plugin.engine import (
+    get_espn_days,
+    merged_settings,
+    refresh_channels_dvr,
+    run_once,
+    validate_settings,
+)
 from dispatcharr_plugin.state import State
 
 
@@ -35,6 +41,10 @@ def test_merged_settings_defaults():
     assert merged["min_similarity"] == 0.85
     assert merged["look_ahead_days"] == 1
     assert merged["auto_refresh"] is True
+    assert merged["channels_dvr_enabled"] is False
+    assert merged["channels_dvr_base_url"] == ""
+    assert merged["channels_dvr_m3u_source"] == ""
+    assert merged["channels_dvr_epg_lineup"] == ""
 
 
 def test_merged_settings_overrides():
@@ -48,6 +58,21 @@ def test_validate_settings_without_django():
     result = validate_settings({})
     assert result["status"] == "error"
     assert any("Dispatcharr" in e for e in result["errors"])
+
+
+def test_validate_settings_channels_dvr_requires_config():
+    result = validate_settings({"channels_dvr_enabled": True})
+    assert any("channels_dvr_base_url" in e for e in result["errors"])
+    assert any("channels_dvr_m3u_source" in e for e in result["errors"])
+
+    result = validate_settings(
+        {
+            "channels_dvr_enabled": True,
+            "channels_dvr_base_url": "http://dvr:8089",
+            "channels_dvr_m3u_source": "Platinum and EPG",
+        }
+    )
+    assert not any("channels_dvr" in e.lower() for e in result["errors"])
 
 
 def espn_streams_for_day(day_iso: str) -> list[dict]:
@@ -103,7 +128,7 @@ def test_run_once_skips_when_nothing_changed(monkeypatch, tmp_path):
     )
     monkeypatch.setattr(
         "dispatcharr_plugin.sync.sync_to_dispatcharr",
-        lambda matches, settings: {"associated": len(matches)},
+        lambda matches, settings, **kwargs: {"associated": len(matches)},
     )
 
     first = run_once({})
@@ -112,6 +137,42 @@ def test_run_once_skips_when_nothing_changed(monkeypatch, tmp_path):
 
     second = run_once({})
     assert second["status"] == "skipped"
+
+
+def test_run_once_skips_but_refreshes_channels_dvr(monkeypatch, tmp_path):
+    from dispatcharr_plugin import engine
+
+    days = get_espn_days({})
+    streams = espn_streams_for_day(days[0])
+    patch_state(monkeypatch, tmp_path)
+    monkeypatch.setattr("dispatcharr_plugin.sync.list_streams", lambda: streams)
+    monkeypatch.setattr(
+        "dispatcharr_plugin.engine.fetch_espn_plus_schedule",
+        lambda day_iso: [espn_event_for_day(day_iso)],
+    )
+    monkeypatch.setattr(
+        "dispatcharr_plugin.sync.sync_to_dispatcharr",
+        lambda matches, settings, **kwargs: {"associated": len(matches)},
+    )
+    monkeypatch.setattr(
+        engine,
+        "refresh_channels_dvr",
+        lambda settings: {"status": "ok", "message": "refreshed"},
+    )
+
+    dvr_settings = {
+        "channels_dvr_enabled": True,
+        "channels_dvr_base_url": "http://dvr",
+        "channels_dvr_m3u_source": "Platinum and EPG",
+    }
+
+    first = run_once(dvr_settings)
+    assert first["status"] == "ok"
+    assert first["channels_dvr"] == {"status": "ok", "message": "refreshed"}
+
+    second = run_once(dvr_settings)
+    assert second["status"] == "skipped"
+    assert second["channels_dvr"] == {"status": "ok", "message": "refreshed"}
 
 
 def test_run_once_runs_when_matches_change(monkeypatch, tmp_path):
@@ -134,7 +195,7 @@ def test_run_once_runs_when_matches_change(monkeypatch, tmp_path):
     monkeypatch.setattr("dispatcharr_plugin.engine.fetch_espn_plus_schedule", schedule)
     monkeypatch.setattr(
         "dispatcharr_plugin.sync.sync_to_dispatcharr",
-        lambda matches, settings: {"associated": len(matches)},
+        lambda matches, settings, **kwargs: {"associated": len(matches)},
     )
 
     assert run_once({})["status"] == "ok"
@@ -156,7 +217,7 @@ def test_run_once_force_runs_even_when_unchanged(monkeypatch, tmp_path):
     )
     monkeypatch.setattr(
         "dispatcharr_plugin.sync.sync_to_dispatcharr",
-        lambda matches, settings: {"associated": len(matches)},
+        lambda matches, settings, **kwargs: {"associated": len(matches)},
     )
 
     assert run_once({})["status"] == "ok"
@@ -177,7 +238,7 @@ def test_run_once_dry_run_does_not_record_hash(monkeypatch, tmp_path):
     )
     monkeypatch.setattr(
         "dispatcharr_plugin.sync.sync_to_dispatcharr",
-        lambda matches, settings: {"associated": len(matches)},
+        lambda matches, settings, **kwargs: {"associated": len(matches)},
     )
 
     assert run_once({}, dry_run=True)["status"] == "ok"
@@ -220,3 +281,174 @@ def test_run_once_no_matches(monkeypatch, tmp_path):
     assert result["matches"] == 0
     assert result["message"] == "No matches found"
     assert "days" in result
+
+
+def test_refresh_channels_dvr_skips_when_disabled(monkeypatch):
+    monkeypatch.setattr("dispatcharr_plugin.engine.refresh_m3u_source", lambda *a, **k: True)
+    monkeypatch.setattr("dispatcharr_plugin.engine.refresh_epg_lineup", lambda *a, **k: True)
+    result = refresh_channels_dvr({"channels_dvr_enabled": False})
+    assert result["status"] == "skipped"
+
+
+def test_refresh_channels_dvr_skips_without_source(monkeypatch):
+    monkeypatch.setattr("dispatcharr_plugin.engine.refresh_m3u_source", lambda *a, **k: True)
+    monkeypatch.setattr("dispatcharr_plugin.engine.refresh_epg_lineup", lambda *a, **k: True)
+    result = refresh_channels_dvr(
+        {"channels_dvr_enabled": True, "channels_dvr_base_url": "http://dvr"}
+    )
+    assert result["status"] == "skipped"
+
+
+def test_refresh_channels_dvr_refreshes_m3u_and_derived_epg(monkeypatch):
+    from dispatcharr_plugin import engine
+
+    calls = []
+    monkeypatch.setattr(engine.time, "sleep", lambda s: calls.append(s))
+    monkeypatch.setattr(engine, "list_sources", lambda base_url: {"m3u_sources": []})
+    monkeypatch.setattr(
+        engine,
+        "refresh_m3u_source",
+        lambda base_url, source, device_id=None: calls.append(("m3u", source, device_id)) or True,
+    )
+    monkeypatch.setattr(
+        engine,
+        "refresh_epg_lineup",
+        lambda base_url, lineup: calls.append(("epg", lineup)) or True,
+    )
+
+    result = refresh_channels_dvr(
+        {
+            "channels_dvr_enabled": True,
+            "channels_dvr_base_url": "http://dvr",
+            "channels_dvr_m3u_source": "Platinum and EPG",
+        }
+    )
+    assert result["status"] == "ok"
+    assert ("m3u", "Platinum and EPG", None) in calls
+    assert ("epg", "XMLTV-Platinum and EPG") in calls
+    assert 5 in calls
+
+
+def test_refresh_channels_dvr_uses_canonical_lineup_from_device_map(monkeypatch):
+    from dispatcharr_plugin import engine
+
+    calls = []
+    monkeypatch.setattr(engine.time, "sleep", lambda s: None)
+    monkeypatch.setattr(
+        engine,
+        "list_sources",
+        lambda base_url: {
+            "m3u_sources": [
+                {"name": "Platinum and EPG", "device_id": "M3U-PlatinumandEPG"}
+            ],
+            "device_to_lineup": {"M3U-PlatinumandEPG": "XMLTV-PlatinumandEPG"},
+        },
+    )
+    monkeypatch.setattr(engine, "refresh_m3u_source", lambda *a, **k: True)
+    monkeypatch.setattr(
+        engine, "refresh_epg_lineup", lambda base_url, lineup: calls.append(lineup) or True
+    )
+
+    refresh_channels_dvr(
+        {
+            "channels_dvr_enabled": True,
+            "channels_dvr_base_url": "http://dvr",
+            "channels_dvr_m3u_source": "Platinum and EPG",
+        }
+    )
+    assert calls == ["XMLTV-PlatinumandEPG"]
+
+
+def test_refresh_channels_dvr_uses_explicit_lineup(monkeypatch):
+    from dispatcharr_plugin import engine
+
+    calls = []
+    monkeypatch.setattr(engine.time, "sleep", lambda s: None)
+    monkeypatch.setattr(engine, "list_sources", lambda base_url: {"m3u_sources": []})
+    monkeypatch.setattr(engine, "refresh_m3u_source", lambda *a, **k: True)
+    monkeypatch.setattr(
+        engine, "refresh_epg_lineup", lambda base_url, lineup: calls.append(lineup) or True
+    )
+
+    refresh_channels_dvr(
+        {
+            "channels_dvr_enabled": True,
+            "channels_dvr_base_url": "http://dvr",
+            "channels_dvr_m3u_source": "Platinum and EPG",
+            "channels_dvr_epg_lineup": "XMLTV-MyCustom",
+        }
+    )
+    assert calls == ["XMLTV-MyCustom"]
+
+
+def test_refresh_channels_dvr_reports_partial_failure(monkeypatch):
+    from dispatcharr_plugin import engine
+
+    monkeypatch.setattr(engine.time, "sleep", lambda s: None)
+    monkeypatch.setattr(engine, "list_sources", lambda base_url: {"m3u_sources": []})
+    monkeypatch.setattr(engine, "refresh_m3u_source", lambda *a, **k: True)
+    monkeypatch.setattr(engine, "refresh_epg_lineup", lambda *a, **k: False)
+
+    result = refresh_channels_dvr(
+        {
+            "channels_dvr_enabled": True,
+            "channels_dvr_base_url": "http://dvr",
+            "channels_dvr_m3u_source": "Platinum and EPG",
+        }
+    )
+    assert result["status"] == "error"
+    assert "EPG" in result["message"]
+
+
+def test_run_once_refreshes_channels_dvr_when_enabled(monkeypatch, tmp_path):
+    from dispatcharr_plugin import engine
+
+    days = get_espn_days({})
+    streams = espn_streams_for_day(days[0])
+    patch_state(monkeypatch, tmp_path)
+    monkeypatch.setattr("dispatcharr_plugin.sync.list_streams", lambda: streams)
+    monkeypatch.setattr(
+        "dispatcharr_plugin.engine.fetch_espn_plus_schedule",
+        lambda day_iso: [espn_event_for_day(day_iso)],
+    )
+    monkeypatch.setattr(
+        "dispatcharr_plugin.sync.sync_to_dispatcharr",
+        lambda matches, settings, **kwargs: {"associated": len(matches)},
+    )
+    monkeypatch.setattr(
+        engine,
+        "refresh_channels_dvr",
+        lambda settings: {"status": "ok", "message": "refreshed"},
+    )
+
+    result = run_once(
+        {
+            "channels_dvr_enabled": True,
+            "channels_dvr_base_url": "http://dvr",
+            "channels_dvr_m3u_source": "Platinum and EPG",
+        }
+    )
+    assert result["status"] == "ok"
+    assert result["channels_dvr"] == {"status": "ok", "message": "refreshed"}
+
+
+def test_run_once_skips_channels_dvr_when_disabled(monkeypatch, tmp_path):
+    from dispatcharr_plugin import engine
+
+    days = get_espn_days({})
+    streams = espn_streams_for_day(days[0])
+    patch_state(monkeypatch, tmp_path)
+    monkeypatch.setattr("dispatcharr_plugin.sync.list_streams", lambda: streams)
+    monkeypatch.setattr(
+        "dispatcharr_plugin.engine.fetch_espn_plus_schedule",
+        lambda day_iso: [espn_event_for_day(day_iso)],
+    )
+    monkeypatch.setattr(
+        "dispatcharr_plugin.sync.sync_to_dispatcharr",
+        lambda matches, settings, **kwargs: {"associated": len(matches)},
+    )
+    monkeypatch.setattr(engine, "refresh_channels_dvr", lambda settings: {"status": "ok"})
+
+    result = run_once({})
+    assert result["status"] == "ok"
+    assert "channels_dvr" not in result

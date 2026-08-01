@@ -1,11 +1,14 @@
 import sys
 import types
+from datetime import datetime, timedelta
 from types import SimpleNamespace
+from zoneinfo import ZoneInfo
 
 from dispatcharr_plugin.playlist import PlaylistEntry
 from dispatcharr_plugin.sync import (
     assign_epg_data,
     channel_sort_key,
+    remove_stale_channels,
     target_channel_number,
     trigger_refresh_and_wait,
     upsert_epg_rows,
@@ -258,3 +261,141 @@ def test_trigger_refresh_no_retry_on_error(monkeypatch):
     monkeypatch.setattr("dispatcharr_plugin.sync.wait_for_epg_refresh", lambda source_id: False)
     assert trigger_refresh_and_wait(39) is False
     assert calls == [(39, True)]
+
+
+EASTERN = ZoneInfo("US/Eastern")
+
+
+class _DeleteFakeChannel:
+    def __init__(self, name, group_id):
+        self.name = name
+        self.tvg_id = f"ESPN+.{name}"
+        self.channel_group_id = group_id
+        self.deleted = False
+
+    def delete(self):
+        self.deleted = True
+
+
+def _named(name, hour=19, days_back=1):
+    d = datetime.now(EASTERN) - timedelta(days=days_back)
+    h12 = hour % 12
+    if h12 == 0:
+        h12 = 12
+    ampm = "AM" if hour < 12 else "PM"
+    return f"{name} @ {h12}:00 {ampm} @ {d.strftime('%b')} {d.day}"
+
+
+def _today_start():
+    return datetime.now(EASTERN).replace(hour=0, minute=0, second=0, microsecond=0)
+
+
+def _event(start, end):
+    return {"start_time": start.isoformat(), "end_time": end.isoformat()}
+
+
+def test_remove_stale_channels_deletes_previous_day():
+    group = SimpleNamespace(id=1)
+    today = _today_start()
+    stale = _DeleteFakeChannel(_named("ESPN+ 1: MLB: A vs B"), 1)
+    existing = {stale.name.lower(): stale}
+    removed, tvg_ids = remove_stale_channels(existing, set(), group, [], today)
+    assert removed == 1
+    assert stale.deleted is True
+    assert tvg_ids == [stale.tvg_id]
+
+
+def test_remove_stale_channels_keeps_matched_names():
+    group = SimpleNamespace(id=1)
+    today = _today_start()
+    ch = _DeleteFakeChannel(_named("ESPN+ 1: MLB: A vs B"), 1)
+    existing = {ch.name.lower(): ch}
+    removed, _ = remove_stale_channels(existing, {ch.name.lower()}, group, [], today)
+    assert removed == 0
+    assert ch.deleted is False
+
+
+def test_remove_stale_channels_skips_other_groups():
+    group = SimpleNamespace(id=1)
+    today = _today_start()
+    ch = _DeleteFakeChannel(_named("ESPN+ 1: MLB: A vs B"), 99)
+    existing = {ch.name.lower(): ch}
+    removed, _ = remove_stale_channels(existing, set(), group, [], today)
+    assert removed == 0
+    assert ch.deleted is False
+
+
+def test_remove_stale_channels_keeps_unparseable_name():
+    group = SimpleNamespace(id=1)
+    today = _today_start()
+    ch = _DeleteFakeChannel("ESPN+ 3: Some Event", 1)
+    existing = {ch.name.lower(): ch}
+    removed, _ = remove_stale_channels(existing, set(), group, [], today)
+    assert removed == 0
+    assert ch.deleted is False
+
+
+def test_remove_stale_channels_keeps_today_or_future():
+    group = SimpleNamespace(id=1)
+    today = _today_start()
+    ch = _DeleteFakeChannel(_named("ESPN+ 1: MLB: A vs B", days_back=0), 1)
+    existing = {ch.name.lower(): ch}
+    removed, _ = remove_stale_channels(existing, set(), group, [], today)
+    assert removed == 0
+    assert ch.deleted is False
+
+
+def test_remove_stale_channels_keeps_between_days_event():
+    group = SimpleNamespace(id=1)
+    today = _today_start()
+    d = datetime.now(EASTERN) - timedelta(days=1)
+    ch = _DeleteFakeChannel(_named("ESPN+ 2: NBA: C vs D", hour=23, days_back=1), 1)
+    start = datetime(d.year, d.month, d.day, 23, 0, tzinfo=EASTERN)
+    end = today + timedelta(hours=1)
+    existing = {ch.name.lower(): ch}
+    removed, _ = remove_stale_channels(existing, set(), group, [_event(start, end)], today)
+    assert removed == 0
+    assert ch.deleted is False
+
+
+def test_remove_stale_channels_removes_replaced_between_days():
+    group = SimpleNamespace(id=1)
+    today = _today_start()
+    d = datetime.now(EASTERN) - timedelta(days=1)
+    ch = _DeleteFakeChannel(_named("ESPN+ 2: NBA: C vs D", hour=23, days_back=1), 1)
+    start = datetime(d.year, d.month, d.day, 23, 0, tzinfo=EASTERN)
+    end = today + timedelta(hours=1)
+    existing = {ch.name.lower(): ch}
+    removed, _ = remove_stale_channels(
+        existing, set(), group, [_event(start, end)], today, active_indices={2}
+    )
+    assert removed == 1
+    assert ch.deleted is True
+
+
+def test_remove_stale_channels_keeps_between_days_when_not_replaced():
+    group = SimpleNamespace(id=1)
+    today = _today_start()
+    d = datetime.now(EASTERN) - timedelta(days=1)
+    ch = _DeleteFakeChannel(_named("ESPN+ 2: NBA: C vs D", hour=23, days_back=1), 1)
+    start = datetime(d.year, d.month, d.day, 23, 0, tzinfo=EASTERN)
+    end = today + timedelta(hours=1)
+    existing = {ch.name.lower(): ch}
+    removed, _ = remove_stale_channels(
+        existing, set(), group, [_event(start, end)], today, active_indices={1}
+    )
+    assert removed == 0
+    assert ch.deleted is False
+
+
+def test_remove_stale_channels_deletes_prev_day_event_ending_yesterday():
+    group = SimpleNamespace(id=1)
+    today = _today_start()
+    d = datetime.now(EASTERN) - timedelta(days=1)
+    ch = _DeleteFakeChannel(_named("ESPN+ 2: NBA: C vs D", hour=18, days_back=1), 1)
+    start = datetime(d.year, d.month, d.day, 18, 0, tzinfo=EASTERN)
+    end = datetime(d.year, d.month, d.day, 20, 0, tzinfo=EASTERN)
+    existing = {ch.name.lower(): ch}
+    removed, _ = remove_stale_channels(existing, set(), group, [_event(start, end)], today)
+    assert removed == 1
+    assert ch.deleted is True

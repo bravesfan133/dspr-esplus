@@ -16,12 +16,6 @@ ENDED_PREFIX = "ENDED: "
 ENDED_HORIZON_HOURS = 3
 
 
-def _escape_xml(text: Optional[str]) -> str:
-    if not text:
-        return ""
-    return str(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;").replace("'", "&apos;")
-
-
 def _format_xmltv_time(dt_str: Optional[str]) -> str:
     if not dt_str:
         return ""
@@ -49,6 +43,7 @@ def _emit_programme(
     image_url: str = "",
     is_live: bool = False,
     is_real: bool = False,
+    show_details: bool = False,
 ):
     prog = SubElement(parent, "programme")
     prog.set("channel", channel_id)
@@ -57,18 +52,31 @@ def _emit_programme(
 
     title_el = SubElement(prog, "title")
     title_el.set("lang", "en")
-    title_el.text = _escape_xml(title)
+    title_el.text = title
 
     if image_url:
         icon_el = SubElement(prog, "icon")
-        icon_el.set("src", _escape_xml(image_url))
+        icon_el.set("src", image_url)
+
+    if is_real or show_details:
+        subtitle = (metadata or {}).get("subtitle")
+        if subtitle:
+            sub_el = SubElement(prog, "sub-title")
+            sub_el.set("lang", "en")
+            sub_el.text = subtitle
 
     if is_real:
         desc_text = _build_description(metadata)
         if desc_text:
             desc_el = SubElement(prog, "desc")
             desc_el.set("lang", "en")
-            desc_el.text = _escape_xml(desc_text)
+            desc_el.text = desc_text
+    elif show_details:
+        desc_text = (metadata or {}).get("description") or _build_description(metadata)
+        if desc_text:
+            desc_el = SubElement(prog, "desc")
+            desc_el.set("lang", "en")
+            desc_el.text = desc_text
     if metadata:
         cat_sports = SubElement(prog, "category")
         cat_sports.set("lang", "en")
@@ -83,21 +91,20 @@ def _emit_programme(
         if sport:
             cat_el = SubElement(prog, "category")
             cat_el.set("lang", "en")
-            cat_el.text = _escape_xml(sport)
+            cat_el.text = sport
         if league:
             cat_el2 = SubElement(prog, "category")
             cat_el2.set("lang", "en")
-            cat_el2.text = _escape_xml(league)
+            cat_el2.text = league
         if subcategory and subcategory != league:
             cat_el3 = SubElement(prog, "category")
             cat_el3.set("lang", "en")
-            cat_el3.text = _escape_xml(subcategory)
+            cat_el3.text = subcategory
 
     if is_live:
         SubElement(prog, "live")
     if is_real:
         SubElement(prog, "new")
-        SubElement(prog, "premiere")
 
 
 def generate_xmltv(
@@ -114,11 +121,11 @@ def generate_xmltv(
         channel_el.set("id", channel_id)
 
         display_name = SubElement(channel_el, "display-name")
-        display_name.text = _escape_xml(entry.name)
+        display_name.text = entry.name
 
         if entry.tvg_logo:
             icon = SubElement(channel_el, "icon")
-            icon.set("src", _escape_xml(entry.tvg_logo))
+            icon.set("src", entry.tvg_logo)
 
         real_start_str = metadata.get("start_time") or ""
         real_end_str = metadata.get("end_time") or ""
@@ -150,6 +157,7 @@ def generate_xmltv(
                 metadata=metadata,
                 image_url=image_url,
                 is_real=False,
+                show_details=True,
             )
 
         _emit_programme(
@@ -172,6 +180,7 @@ def generate_xmltv(
             metadata=metadata,
             image_url=image_url,
             is_real=False,
+            show_details=True,
         )
 
     rough_string = tostring(root, encoding="unicode")
