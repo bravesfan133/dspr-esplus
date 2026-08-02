@@ -8,7 +8,7 @@ logger = logging.getLogger("espnplus")
 
 class Plugin:
     name = "ESPN+ EPG"
-    version = "1.4.2"
+    version = "1.4.3"
     description = (
         "Generates a custom ESPN+ EPG from your IPTV playlist by matching ESPN+ "
         "streams to ESPN's Watch schedule, then creates channels and assigns EPG "
@@ -34,8 +34,8 @@ class Plugin:
         },
         {
             "id": "test_channels_dvr",
-            "label": "Test Channels DVR Connection",
-            "description": "Check that the Channels DVR server is reachable.",
+            "label": "Test Channels DVR Refresh",
+            "description": "Refresh the M3U source and redownload the XMLTV guide on Channels DVR, and report each request's URL and status.",
             "events": [],
         },
         {
@@ -217,6 +217,7 @@ class Plugin:
     @staticmethod
     def _test_channels_dvr(settings):
         from .channels_dvr import is_reachable
+        from .engine import test_channels_dvr_refresh
 
         base_url = str(settings.get("channels_dvr_base_url", "") or "").strip()
         if not base_url:
@@ -226,9 +227,10 @@ class Plugin:
             }
 
         error = is_reachable(base_url)
-        if error is None:
-            return {"status": "ok", "message": f"Channels DVR reachable at {base_url}"}
-        return {
-            "status": "error",
-            "message": f"Channels DVR unreachable at {base_url}: {error}",
-        }
+        if error is not None:
+            return {
+                "status": "error",
+                "message": f"Channels DVR unreachable at {base_url}: {error}",
+            }
+
+        return test_channels_dvr_refresh(settings)

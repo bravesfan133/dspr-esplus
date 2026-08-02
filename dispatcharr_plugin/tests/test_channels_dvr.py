@@ -6,6 +6,7 @@ from dispatcharr_plugin.channels_dvr import (
     is_reachable,
     list_sources,
     normalize_base_url,
+    refresh_and_report,
     refresh_epg_lineup,
     refresh_m3u_source,
 )
@@ -183,3 +184,51 @@ def test_refresh_epg_lineup_empty_name(monkeypatch):
     install_fake_requests(monkeypatch, put=put)
     assert refresh_epg_lineup("http://dvr", "") is False
     assert calls == []
+
+
+def test_refresh_and_report_posts_m3u_and_puts_epg(monkeypatch):
+    calls = []
+
+    def post(url, timeout=None):
+        calls.append(("POST", url))
+        return FakeResponse(200, {})
+
+    def put(url, timeout=None):
+        calls.append(("PUT", url))
+        return FakeResponse(200, {})
+
+    install_fake_requests(monkeypatch, post=post, put=put)
+    result = refresh_and_report("http://dvr", "PlatinumandEPG")
+    assert result["status"] == "ok"
+    assert ("POST", "http://dvr/providers/m3u/sources/PlatinumandEPG/refresh") in calls
+    assert ("PUT", "http://dvr/dvr/lineups/XMLTV-PlatinumandEPG") in calls
+    assert result["details"] == [
+        "POST http://dvr/providers/m3u/sources/PlatinumandEPG/refresh -> 200",
+        "PUT http://dvr/dvr/lineups/XMLTV-PlatinumandEPG -> 200",
+    ]
+
+
+def test_refresh_and_report_reports_failure_with_urls(monkeypatch):
+    calls = []
+
+    def post(url, timeout=None):
+        calls.append(("POST", url))
+        return FakeResponse(404, {})
+
+    def put(url, timeout=None):
+        calls.append(("PUT", url))
+        raise ConnectionError("refused")
+
+    install_fake_requests(monkeypatch, post=post, put=put)
+    result = refresh_and_report("http://dvr", "PlatinumandEPG", lineup_name="XMLTV-PlatinumandEPG")
+    assert result["status"] == "error"
+    assert any("POST" in d for d in result["details"])
+    assert any("PUT" in d for d in result["details"])
+    assert result["details"][0].endswith("HTTP 404")
+
+
+def test_refresh_and_report_missing_source(monkeypatch):
+    install_fake_requests(monkeypatch)
+    result = refresh_and_report("http://dvr", "")
+    assert result["status"] == "error"
+    assert "source" in result["message"]

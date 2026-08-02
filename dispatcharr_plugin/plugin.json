@@ -1,6 +1,6 @@
 {
   "name": "ESPN+ EPG",
-  "version": "1.4.2",
+  "version": "1.4.3",
   "description": "Generates a custom ESPN+ EPG from your IPTV playlist by matching ESPN+ streams to ESPN's Watch schedule, then creates channels and assigns EPG data in Dispatcharr. Runs automatically after every M3U refresh, and can refresh the matching playlist and guide on a Channels DVR server.",
   "author": "nick",
   "fields": [
@@ -147,8 +147,8 @@
     },
     {
       "id": "test_channels_dvr",
-      "label": "Test Channels DVR Connection",
-      "description": "Check that the Channels DVR server is reachable.",
+      "label": "Test Channels DVR Refresh",
+      "description": "Refresh the M3U source and redownload the XMLTV guide on Channels DVR, and report each request's URL and status.",
       "events": []
     },
     {

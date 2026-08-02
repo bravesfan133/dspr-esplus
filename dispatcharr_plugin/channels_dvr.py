@@ -137,15 +137,70 @@ def refresh_m3u_source(
         try:
             resp = requests.post(url, timeout=timeout)
             if resp.status_code == 404 and len(names) > 1:
+                logger.warning(f"Channels DVR M3U refresh 404 for '{name}': {url}")
                 continue
             resp.raise_for_status()
-            logger.info(f"Channels DVR M3U refresh triggered for '{source_name}'")
+            logger.info(f"Channels DVR M3U refresh triggered for '{source_name}': POST {url} -> {resp.status_code}")
             return True
         except Exception as e:
-            logger.warning(f"Channels DVR M3U refresh failed for '{name}': {e}")
+            logger.warning(f"Channels DVR M3U refresh failed for '{name}': {e} (POST {url})")
             if len(names) == 1 or name == names[-1]:
                 return False
     return False
+
+
+def refresh_and_report(
+    base_url: str,
+    source_name: str,
+    lineup_name: Optional[str] = None,
+    timeout: float = DEFAULT_TIMEOUT,
+) -> dict:
+    """Perform the real M3U POST and EPG PUT refresh and report each URL + status.
+
+    Returns {"status": "ok"|"error", "details": [...], "message": str}.
+    """
+    import requests
+
+    base_url = normalize_base_url(base_url)
+    source_name = (source_name or "").strip()
+    lineup_name = (lineup_name or "").strip() or derive_epg_lineup_name(source_name)
+
+    details = []
+    if not source_name:
+        return {
+            "status": "error",
+            "details": details,
+            "message": "No Channels DVR M3U source selected",
+        }
+
+    m3u_url = f"{base_url}/providers/m3u/sources/{quote(source_name)}/refresh"
+    try:
+        resp = requests.post(m3u_url, timeout=timeout)
+        resp.raise_for_status()
+        details.append(f"POST {m3u_url} -> {resp.status_code}")
+    except Exception as e:
+        details.append(f"POST {m3u_url} -> ERROR: {e}")
+
+    epg_url = f"{base_url}/dvr/lineups/{quote(lineup_name)}"
+    try:
+        resp = requests.put(epg_url, timeout=timeout)
+        resp.raise_for_status()
+        details.append(f"PUT {epg_url} -> {resp.status_code}")
+    except Exception as e:
+        details.append(f"PUT {epg_url} -> ERROR: {e}")
+
+    errors = [d for d in details if "ERROR" in d]
+    if errors:
+        return {
+            "status": "error",
+            "details": details,
+            "message": "; ".join(errors),
+        }
+    return {
+        "status": "ok",
+        "details": details,
+        "message": f"Channels DVR refresh OK: M3U '{source_name}', EPG '{lineup_name}'",
+    }
 
 
 def refresh_epg_lineup(
@@ -166,8 +221,8 @@ def refresh_epg_lineup(
     try:
         resp = requests.put(url, timeout=timeout)
         resp.raise_for_status()
-        logger.info(f"Channels DVR EPG refresh triggered for '{lineup_name}'")
+        logger.info(f"Channels DVR EPG refresh triggered for '{lineup_name}': PUT {url} -> {resp.status_code}")
         return True
     except Exception as e:
-        logger.warning(f"Channels DVR EPG refresh failed for '{lineup_name}': {e}")
+        logger.warning(f"Channels DVR EPG refresh failed for '{lineup_name}': {e} (PUT {url})")
         return False

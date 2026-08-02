@@ -329,7 +329,7 @@ def test_refresh_channels_dvr_refreshes_m3u_and_derived_epg(monkeypatch):
     assert 5 in calls
 
 
-def test_refresh_channels_dvr_uses_canonical_lineup_from_device_map(monkeypatch):
+def test_refresh_channels_dvr_derives_lineup_from_source(monkeypatch):
     from dispatcharr_plugin import engine
 
     calls = []
@@ -356,7 +356,7 @@ def test_refresh_channels_dvr_uses_canonical_lineup_from_device_map(monkeypatch)
             "channels_dvr_m3u_source": "Platinum and EPG",
         }
     )
-    assert calls == ["XMLTV-PlatinumandEPG"]
+    assert calls == ["XMLTV-Platinum and EPG"]
 
 
 def test_refresh_channels_dvr_uses_explicit_lineup(monkeypatch):
@@ -452,3 +452,32 @@ def test_run_once_skips_channels_dvr_when_disabled(monkeypatch, tmp_path):
     result = run_once({})
     assert result["status"] == "ok"
     assert "channels_dvr" not in result
+
+
+def test_test_channels_dvr_refresh(monkeypatch):
+    from dispatcharr_plugin import engine
+
+    captured = {}
+
+    def fake_refresh_and_report(base_url, source_name, lineup_name=None):
+        captured["args"] = (base_url, source_name, lineup_name)
+        return {"status": "ok", "details": ["POST -> 200", "PUT -> 200"]}
+
+    monkeypatch.setattr("dispatcharr_plugin.channels_dvr.refresh_and_report", fake_refresh_and_report)
+
+    result = engine.test_channels_dvr_refresh(
+        {
+            "channels_dvr_base_url": "http://dvr",
+            "channels_dvr_m3u_source": "Platinum and EPG",
+        }
+    )
+    assert result["status"] == "ok"
+    assert captured["args"] == ("http://dvr", "Platinum and EPG", "XMLTV-Platinum and EPG")
+
+
+def test_test_channels_dvr_refresh_missing_source():
+    from dispatcharr_plugin import engine
+
+    result = engine.test_channels_dvr_refresh({"channels_dvr_base_url": "http://dvr"})
+    assert result["status"] == "error"
+    assert "M3U Source" in result["message"]

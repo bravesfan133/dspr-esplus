@@ -146,14 +146,12 @@ def refresh_channels_dvr(settings: dict) -> dict:
         return {"status": "skipped", "message": "No Channels DVR M3U source selected"}
 
     device_id = None
-    device_to_lineup = {}
     try:
         sources_result = list_sources(base_url)
         for source in sources_result.get("m3u_sources", []):
             if source.get("name") == source_name:
                 device_id = source.get("device_id")
                 break
-        device_to_lineup = sources_result.get("device_to_lineup", {})
     except Exception as e:
         logger.warning(f"Could not look up Channels DVR source device id: {e}")
 
@@ -162,9 +160,7 @@ def refresh_channels_dvr(settings: dict) -> dict:
 
     lineup_name = str(settings.get("channels_dvr_epg_lineup", "") or "").strip()
     if not lineup_name:
-        lineup_name = device_to_lineup.get(device_id) or derive_epg_lineup_name(
-            source_name
-        )
+        lineup_name = derive_epg_lineup_name(source_name)
     epg_ok = refresh_epg_lineup(base_url, lineup_name)
 
     if m3u_ok and epg_ok:
@@ -180,6 +176,30 @@ def refresh_channels_dvr(settings: dict) -> dict:
     if not epg_ok:
         problems.append(f"EPG refresh failed for '{lineup_name}'")
     return {"status": "error", "message": "; ".join(problems)}
+
+
+def test_channels_dvr_refresh(settings: dict) -> dict:
+    """Perform the real M3U POST and EPG PUT refresh and report each URL + status."""
+    settings = merged_settings(settings)
+    base_url = str(settings.get("channels_dvr_base_url", "") or "").strip()
+    if not base_url:
+        return {
+            "status": "error",
+            "message": "Set the 'Channels DVR Base URL' setting first, then save settings.",
+        }
+    source_name = str(settings.get("channels_dvr_m3u_source", "") or "").strip()
+    if not source_name:
+        return {
+            "status": "error",
+            "message": "Set the 'Channels DVR M3U Source' setting first, then save settings.",
+        }
+    lineup_name = str(settings.get("channels_dvr_epg_lineup", "") or "").strip()
+    if not lineup_name:
+        lineup_name = derive_epg_lineup_name(source_name)
+
+    from .channels_dvr import refresh_and_report
+
+    return refresh_and_report(base_url, source_name, lineup_name=lineup_name)
 
 
 def run_once(settings: dict, dry_run: bool = False, force: bool = False) -> dict:
