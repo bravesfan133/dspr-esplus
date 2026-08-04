@@ -119,13 +119,51 @@ def upsert_epg_rows(source, sorted_matches: list, prefix: str) -> dict:
     for entry, _metadata in sorted_matches:
         tvg_id = get_channel_id(entry, prefix=prefix)
         name = (entry.name or "")[:name_max_length] if name_max_length else entry.name or ""
+        defaults = {"name": name}
+        if entry.tvg_logo:
+            defaults["icon_url"] = entry.tvg_logo
         row, _created = EPGData.objects.update_or_create(
             epg_source=source,
             tvg_id=tvg_id,
-            defaults={"name": name},
+            defaults=defaults,
         )
         epg_rows[tvg_id] = row
     return epg_rows
+
+
+def assign_channel_logos(xmltv_to_channel: dict, sorted_matches: list, prefix: str) -> int:
+    """Link each channel to a Logo derived from the stream's tvg_logo.
+
+    Mirrors Dispatcharr's 'set-logos-from-epg' task but synchronously from our
+    own data, so the M3U/EPG output carries tvg-logo for Channels DVR.
+    """
+    from apps.channels.models import Logo
+
+    assigned = 0
+    for entry, _metadata in sorted_matches:
+        logo_url = (entry.tvg_logo or "").strip()
+        if not logo_url:
+            continue
+        channel = xmltv_to_channel.get(get_channel_id(entry, prefix=prefix))
+        if channel is None:
+            continue
+        if channel.logo_id is not None:
+            try:
+                if channel.logo.url == logo_url:
+                    continue
+            except Exception:
+                pass
+        logo, _created = Logo.objects.get_or_create(
+            url=logo_url,
+            defaults={"name": (entry.tvg_name or entry.name or "")[:255]},
+        )
+        if channel.logo_id != logo.id:
+            channel.logo_id = logo.id
+            channel.save(update_fields=["logo_id"])
+            assigned += 1
+    if assigned:
+        logger.info(f"Assigned logos to {assigned} channels")
+    return assigned
 
 
 def assign_epg_data(xmltv_to_channel: dict, epg_rows: dict) -> int:
@@ -334,6 +372,8 @@ def sync_to_dispatcharr(
     associated = assign_epg_data(xmltv_to_channel, epg_rows)
     logger.info(f"Assigned EPG data to {associated} channels")
 
+    assigned_logos = assign_channel_logos(xmltv_to_channel, sorted_matches, channel_id_prefix)
+
     refreshed = trigger_refresh_and_wait(source.id)
     if not refreshed:
         logger.warning("EPG program refresh did not complete as expected")
@@ -343,6 +383,7 @@ def sync_to_dispatcharr(
         "updated": updated,
         "removed": removed,
         "associated": associated,
+        "assigned_logos": assigned_logos,
         "epg_source": source_name,
         "refreshed": refreshed,
         "message": (

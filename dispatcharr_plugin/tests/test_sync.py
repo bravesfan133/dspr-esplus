@@ -6,6 +6,7 @@ from zoneinfo import ZoneInfo
 
 from dispatcharr_plugin.playlist import PlaylistEntry
 from dispatcharr_plugin.sync import (
+    assign_channel_logos,
     assign_epg_data,
     channel_sort_key,
     remove_stale_channels,
@@ -93,11 +94,14 @@ class _EPGDataManager:
             row = self.rows[key]
             if "name" in defaults:
                 row.name = defaults["name"]
+            if "icon_url" in defaults:
+                row.icon_url = defaults["icon_url"]
             return row, False
         row = SimpleNamespace(
             id=self.next_id,
             tvg_id=tvg_id,
             name=defaults.get("name", ""),
+            icon_url=defaults.get("icon_url"),
             epg_source=epg_source,
         )
         self.rows[key] = row
@@ -199,6 +203,28 @@ def test_upsert_epg_rows_truncates_name(monkeypatch):
     assert all(len(r.name) <= 512 for r in rows.values())
 
 
+def test_upsert_epg_rows_stores_icon_url(monkeypatch):
+    source = SimpleNamespace(id=39)
+    entry = PlaylistEntry(
+        name="ESPN+ 1: Game @ Jul 31 7:00 PM",
+        stream_url="http://example.com/stream",
+        tvg_logo="http://provider/logo/lakers.png",
+        tvg_name="ESPN+ 1",
+    )
+    install_fake_epg_models(monkeypatch, lambda: [])
+    rows = upsert_epg_rows(source, [(entry, {})], prefix="ESPN+")
+    row = next(iter(rows.values()))
+    assert row.icon_url == "http://provider/logo/lakers.png"
+
+
+def test_upsert_epg_rows_no_icon_url_without_logo(monkeypatch):
+    source = SimpleNamespace(id=39)
+    install_fake_epg_models(monkeypatch, lambda: [])
+    rows = upsert_epg_rows(source, [(make_entry("ESPN+ 1: Game @ Jul 31 7:00 PM"), {})], prefix="ESPN+")
+    row = next(iter(rows.values()))
+    assert row.icon_url is None
+
+
 class _FakeChannel:
     def __init__(self, epg_data_id=None):
         self.epg_data_id = epg_data_id
@@ -226,6 +252,119 @@ def test_assign_epg_data_sets_matching_rows():
     assert ch_c.epg_data is None
 
     assert assign_epg_data({"A": ch_a}, {"A": row_a}) == 0
+
+
+class _FakeLogo:
+    def __init__(self, id, url, name=""):
+        self.id = id
+        self.url = url
+        self.name = name
+
+
+class _LogoManager:
+    def __init__(self):
+        self.by_url = {}
+        self.next_id = 1
+
+    def get_or_create(self, url=None, defaults=None):
+        defaults = defaults or {}
+        if url in self.by_url:
+            return self.by_url[url], False
+        logo = _FakeLogo(self.next_id, url, defaults.get("name", ""))
+        self.next_id += 1
+        self.by_url[url] = logo
+        return logo, True
+
+
+class _FakeLogoChannel:
+    def __init__(self, logo_id=None, logo=None):
+        self.logo_id = logo_id
+        self.logo = logo
+        self.saved = []
+
+    def save(self, update_fields=None):
+        self.saved.append(update_fields)
+
+
+def install_fake_logo_model(monkeypatch):
+    manager = _LogoManager()
+    mod_channels = types.ModuleType("apps.channels.models")
+    mod_channels.Logo = SimpleNamespace(objects=manager)
+    monkeypatch.setitem(sys.modules, "apps", types.ModuleType("apps"))
+    monkeypatch.setitem(sys.modules, "apps.channels", types.ModuleType("apps.channels"))
+    monkeypatch.setitem(sys.modules, "apps.channels.models", mod_channels)
+    return manager
+
+
+def test_assign_channel_logos_creates_and_links_logo(monkeypatch):
+    from dispatcharr_plugin.xmltv_gen import get_channel_id
+
+    manager = install_fake_logo_model(monkeypatch)
+    entry = PlaylistEntry(
+        name="ESPN+ 1: Game @ Jul 31 7:00 PM",
+        stream_url="http://example.com/stream",
+        tvg_logo="http://provider/logo/lakers.png",
+        tvg_name="ESPN+ 1",
+    )
+    channel = _FakeLogoChannel()
+    xmltv_id = get_channel_id(entry, prefix="ESPN+")
+    n = assign_channel_logos({xmltv_id: channel}, [(entry, {})], prefix="ESPN+")
+    assert n == 1
+    assert channel.logo_id == 1
+    assert channel.saved == [["logo_id"]]
+    assert list(manager.by_url) == ["http://provider/logo/lakers.png"]
+
+
+def test_assign_channel_logos_noop_when_logo_missing(monkeypatch):
+    from dispatcharr_plugin.xmltv_gen import get_channel_id
+
+    install_fake_logo_model(monkeypatch)
+    entry = make_entry("ESPN+ 1: Game @ Jul 31 7:00 PM")
+    channel = _FakeLogoChannel()
+    xmltv_id = get_channel_id(entry, prefix="ESPN+")
+    n = assign_channel_logos({xmltv_id: channel}, [(entry, {})], prefix="ESPN+")
+    assert n == 0
+    assert channel.logo_id is None
+    assert channel.saved == []
+
+
+def test_assign_channel_logos_reuses_existing_logo(monkeypatch):
+    from dispatcharr_plugin.xmltv_gen import get_channel_id
+
+    manager = install_fake_logo_model(monkeypatch)
+    entry = PlaylistEntry(
+        name="ESPN+ 1: Game @ Jul 31 7:00 PM",
+        stream_url="http://example.com/stream",
+        tvg_logo="http://provider/logo/lakers.png",
+        tvg_name="ESPN+ 1",
+    )
+    xmltv_id = get_channel_id(entry, prefix="ESPN+")
+    logo, created = manager.get_or_create(
+        url="http://provider/logo/lakers.png", defaults={"name": "ESPN+ 1"}
+    )
+    assert created is True
+    channel = _FakeLogoChannel(logo_id=logo.id, logo=logo)
+    n = assign_channel_logos({xmltv_id: channel}, [(entry, {})], prefix="ESPN+")
+    assert n == 0
+    assert channel.logo_id == logo.id
+    assert channel.saved == []
+    assert len(manager.by_url) == 1
+
+
+def test_assign_channel_logos_skips_unmatched_channel(monkeypatch):
+    from dispatcharr_plugin.xmltv_gen import get_channel_id
+
+    manager = install_fake_logo_model(monkeypatch)
+    entry = PlaylistEntry(
+        name="ESPN+ 1: Game @ Jul 31 7:00 PM",
+        stream_url="http://example.com/stream",
+        tvg_logo="http://provider/logo/lakers.png",
+        tvg_name="ESPN+ 1",
+    )
+    xmltv_id = get_channel_id(entry, prefix="ESPN+")
+    n = assign_channel_logos({}, [(entry, {})], prefix="ESPN+")
+    assert n == 0
+    assert manager.by_url == {}
 
 
 def make_delayer():

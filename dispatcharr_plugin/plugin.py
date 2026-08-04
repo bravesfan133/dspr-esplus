@@ -8,7 +8,7 @@ logger = logging.getLogger("espnplus")
 
 class Plugin:
     name = "ESPN+ EPG"
-    version = "1.4.3"
+    version = "1.4.4"
     description = (
         "Generates a custom ESPN+ EPG from your IPTV playlist by matching ESPN+ "
         "streams to ESPN's Watch schedule, then creates channels and assigns EPG "
